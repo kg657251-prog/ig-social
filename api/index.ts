@@ -9,6 +9,8 @@ const BROWSER_UA =
 const CRAWLER_USER_AGENTS = [
   'Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)',
   'Twitterbot/1.0',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 254.0.0.19.109',
+  'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   'WhatsApp/2.21.12.21 A',
 ];
 
