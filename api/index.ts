@@ -399,8 +399,7 @@ async function findInstagramProfileById(
 }
 
 async function fetchViaCrawler(
-  username: string,
-  cookieHeader?: string
+  username: string
 ): Promise<IgProfilePayload | null> {
   for (const ua of CRAWLER_USER_AGENTS) {
     try {
@@ -413,7 +412,6 @@ async function fetchViaCrawler(
           'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
       };
-      if (cookieHeader) headers.cookie = cookieHeader;
 
       const response = await fetch(`https://www.instagram.com/${username}/`, {
         headers,
@@ -493,6 +491,52 @@ router.get('/', (_req, res) => {
   res.json({ ok: true, status: 'IG Social API active', timestamp: new Date().toISOString() });
 });
 
+// Debug endpoint to test Instagram responses from Vercel
+router.get('/debug-ig/:username', async (req, res) => {
+  const username = String(req.params.username || '').trim();
+  const results: any[] = [];
+
+  for (const ua of CRAWLER_USER_AGENTS) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const resp = await fetch(`https://www.instagram.com/${username}/`, {
+        headers: {
+          'User-Agent': ua,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const html = await resp.text();
+      const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
+      const title = titleMatch ? titleMatch[1] : null;
+      const profile = extractProfileFromHtml(username, null, html);
+
+      results.push({
+        ua: ua.slice(0, 30),
+        status: resp.status,
+        url: resp.url,
+        length: html.length,
+        title,
+        extracted: profile ? {
+          name: profile.fullName,
+          followers: profile.followersCount,
+          pic: Boolean(profile.profilePicUrl),
+        } : null,
+      });
+    } catch (err: any) {
+      results.push({
+        ua: ua.slice(0, 30),
+        error: err.message,
+      });
+    }
+  }
+
+  res.json({ username, results });
+});
+
 // Instagram Lookup
 router.get('/ig/profile/:identifier', async (req, res) => {
   const raw = String(req.params.identifier || '').trim().replace(/^@+/, '');
@@ -556,8 +600,8 @@ router.get('/ig/profile/:identifier', async (req, res) => {
       return;
     }
 
-    // Primary: fetch via mobile/crawler user agents (with session cookie if present)
-    const crawlerProfile = await fetchViaCrawler(raw, cookieHeader);
+    // Primary: fetch via mobile/crawler user agents
+    const crawlerProfile = await fetchViaCrawler(raw);
     if (crawlerProfile) {
       profileCache.set(cacheKey, { profile: crawlerProfile, timestamp: Date.now() });
       res.json({ ok: true, mode: 'live', profile: crawlerProfile });
