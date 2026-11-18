@@ -424,6 +424,24 @@ app.get('/api/ig/profile/:identifier', async (req, res) => {
     return;
   }
 
+  // Build a minimal fallback profile so the user can still proceed even when
+  // Instagram blocks datacenter IPs (Vercel, AWS, etc.).
+  const buildFallbackProfile = (username: string): IgProfilePayload => ({
+    id: null,
+    username,
+    profileUrl: `https://www.instagram.com/${username}/`,
+    fullName: null,
+    bio: null,
+    profilePicUrl: null,
+    followersCount: null,
+    followingCount: null,
+    postsCount: null,
+    isPrivate: false,
+    isVerified: false,
+    externalUrl: null,
+    categoryName: null,
+  });
+
   const cookieHeader = buildCookieHeader();
 
   try {
@@ -440,14 +458,17 @@ app.get('/api/ig/profile/:identifier', async (req, res) => {
         });
         return;
       }
-      res.status(401).json({
-        ok: false,
-        error:
-          'Instagram requires IG_SESSION_ID in server secrets to look up a profile by numeric User ID.',
+      // Fallback: accept the numeric ID anyway so the user can proceed
+      res.json({
+        ok: true,
+        mode: 'unauthenticated_fallback',
+        notice: 'Could not fetch full profile details. Username accepted.',
+        profile: buildFallbackProfile(raw),
       });
       return;
     }
 
+    // Try all scraping strategies
     const crawlerProfile = await fetchViaCrawler(raw);
     if (crawlerProfile) {
       res.json({ ok: true, mode: 'live', profile: crawlerProfile });
@@ -481,18 +502,37 @@ app.get('/api/ig/profile/:identifier', async (req, res) => {
       }
     }
 
-    res.status(404).json({
-      ok: false,
-      error: `Could not find an Instagram profile for "@${raw}". Please check the spelling or ensure the account is active.`,
+    // ── Fallback: accept the username with a minimal profile ──
+    // Instagram blocks most datacenter IPs from scraping. Rather than
+    // rejecting the user entirely, we accept a valid-looking username
+    // so the purchase flow can continue.
+    res.json({
+      ok: true,
+      mode: 'unauthenticated_fallback',
+      notice:
+        'Instagram profile details could not be loaded right now, but your username has been accepted.',
+      profile: buildFallbackProfile(raw),
     });
   } catch (err) {
-    res.status(502).json({
-      ok: false,
-      error:
-        err instanceof Error
-          ? `Failed to reach Instagram lookup service: ${err.message}`
-          : 'Failed to verify Instagram profile.',
-    });
+    // Even on a total crash, still let the user proceed with a fallback
+    console.error('[IG Lookup Error]', err);
+    if (isValidUsername) {
+      res.json({
+        ok: true,
+        mode: 'unauthenticated_fallback',
+        notice:
+          'Instagram verification is temporarily unavailable. Your username has been accepted.',
+        profile: buildFallbackProfile(raw),
+      });
+    } else {
+      res.status(502).json({
+        ok: false,
+        error:
+          err instanceof Error
+            ? `Failed to reach Instagram lookup service: ${err.message}`
+            : 'Failed to verify Instagram profile.',
+      });
+    }
   }
 });
 

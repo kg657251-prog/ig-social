@@ -135,10 +135,39 @@ export function StepVerifyCard({
           minute: '2-digit',
         }),
       });
-    } catch {
-      setErrorMessage(
-        'Network error while verifying Instagram profile. Please try again.'
-      );
+    } catch (err) {
+      // If the fetch itself failed (network error, DNS, CORS, etc.)
+      // we still let the user proceed with a client-side fallback
+      const cleanHandle = normalizeHandle(usernameInput);
+      if (cleanHandle && /^[a-zA-Z0-9._]{2,30}$/.test(cleanHandle)) {
+        onVerifySuccess({
+          id: null,
+          username: cleanHandle,
+          profileUrl: `https://www.instagram.com/${cleanHandle}/`,
+          fullName: null,
+          bio: null,
+          profilePicUrl: null,
+          followersCount: null,
+          followingCount: null,
+          postsCount: null,
+          isPrivate: false,
+          isVerified: false,
+          externalUrl: null,
+          categoryName: null,
+          lookupMode: 'unauthenticated_fallback',
+          notice:
+            'Could not reach the verification server. Username accepted — you can proceed.',
+          verifiedAt: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+        });
+        setUsernameInput(cleanHandle);
+      } else {
+        setErrorMessage(
+          'Network error while verifying Instagram profile. Please check your connection and try again.'
+        );
+      }
     } finally {
       setIsVerifying(false);
     }
@@ -264,7 +293,10 @@ export function StepVerifyCard({
                 </div>
               </div>
 
-              {/* Stats Row */}
+              {/* Stats Row — only show when we have actual data */}
+              {(verifiedAccount.postsCount !== null ||
+                verifiedAccount.followersCount !== null ||
+                verifiedAccount.followingCount !== null) && (
               <div className="w-full grid grid-cols-3 gap-2 mt-1">
                 <div className="flex flex-col items-center gap-1 py-3 rounded-xl bg-white/[0.06] border border-white/[0.08] backdrop-blur-sm hover:bg-white/[0.1] transition-colors">
                   <Image className="w-4 h-4 text-[#93C5FD] mb-0.5" />
@@ -294,6 +326,15 @@ export function StepVerifyCard({
                   </p>
                 </div>
               </div>
+              )}
+
+              {/* Fallback notice */}
+              {verifiedAccount.notice && (
+                <div className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs font-medium">
+                  <Info className="w-3.5 h-3.5 shrink-0" />
+                  <span>{verifiedAccount.notice}</span>
+                </div>
+              )}
 
               {/* Private account warning */}
               {verifiedAccount.isPrivate && (
