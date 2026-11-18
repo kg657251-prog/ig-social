@@ -10,6 +10,7 @@ const CRAWLER_USER_AGENTS = [
   'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 254.0.0.19.109',
   'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   'WhatsApp/2.21.12.21 A',
+  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
   'Twitterbot/1.0',
 ];
 
@@ -289,13 +290,14 @@ async function fetchViaWebProfileInfo(
 async function findInstagramIdByUsername(
   username: string,
   cookieHeader: string
-): Promise<{ userId: string | null; rawHtml: string | null }> {
+): Promise<{ userId: string | null; profile: IgProfilePayload | null }> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
 
     const headers: Record<string, string> = {
-      'User-Agent': BROWSER_UA,
+      'User-Agent':
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 254.0.0.19.109',
       Accept:
         'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
@@ -308,8 +310,19 @@ async function findInstagramIdByUsername(
     });
     clearTimeout(timer);
 
-    if (res.status === 404) return { userId: null, rawHtml: null };
+    if (res.status === 404) return { userId: null, profile: null };
     const html = await res.text();
+
+    const profile = extractProfileFromHtml(username, null, html);
+    if (
+      profile &&
+      (profile.profilePicUrl ||
+        profile.followersCount !== null ||
+        profile.fullName ||
+        profile.postsCount !== null)
+    ) {
+      return { userId: null, profile };
+    }
 
     const patterns = [
       /"profilePage_([0-9]{3,20})"/,
@@ -322,12 +335,12 @@ async function findInstagramIdByUsername(
     for (const pat of patterns) {
       const match = html.match(pat);
       if (match && match[1]) {
-        return { userId: match[1], rawHtml: html };
+        return { userId: match[1], profile: null };
       }
     }
-    return { userId: null, rawHtml: html };
+    return { userId: null, profile: null };
   } catch {
-    return { userId: null, rawHtml: null };
+    return { userId: null, profile: null };
   }
 }
 
@@ -386,32 +399,39 @@ async function findInstagramProfileById(
 }
 
 async function fetchViaCrawler(
-  username: string
+  username: string,
+  cookieHeader?: string
 ): Promise<IgProfilePayload | null> {
   for (const ua of CRAWLER_USER_AGENTS) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 4500);
+      const timer = setTimeout(() => controller.abort(), 5000);
+
+      const headers: Record<string, string> = {
+        'User-Agent': ua,
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      };
+      if (cookieHeader) headers.cookie = cookieHeader;
 
       const response = await fetch(`https://www.instagram.com/${username}/`, {
-        headers: {
-          'User-Agent': ua,
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
+        headers,
         signal: controller.signal,
       });
       clearTimeout(timer);
 
-      if (response.status === 404) return null;
+      if (response.status === 404) continue;
 
       if (response.ok) {
         const html = await response.text();
         const profile = extractProfileFromHtml(username, null, html);
         if (
           profile &&
-          (profile.profilePicUrl || profile.followersCount !== null)
+          (profile.profilePicUrl ||
+            profile.followersCount !== null ||
+            profile.fullName ||
+            profile.postsCount !== null)
         ) {
           return profile;
         }
@@ -536,15 +556,15 @@ router.get('/ig/profile/:identifier', async (req, res) => {
       return;
     }
 
-    // Primary: fetch via mobile/crawler user agents
-    const crawlerProfile = await fetchViaCrawler(raw);
+    // Primary: fetch via mobile/crawler user agents (with session cookie if present)
+    const crawlerProfile = await fetchViaCrawler(raw, cookieHeader);
     if (crawlerProfile) {
       profileCache.set(cacheKey, { profile: crawlerProfile, timestamp: Date.now() });
       res.json({ ok: true, mode: 'live', profile: crawlerProfile });
       return;
     }
 
-    // Secondary: fetch via web profile info API
+    // Secondary: fetch via web profile info API or authenticated HTML / ID lookup
     if (cookieHeader) {
       const webResult = await fetchViaWebProfileInfo(raw, cookieHeader);
       if (webResult.profile) {
@@ -552,21 +572,22 @@ router.get('/ig/profile/:identifier', async (req, res) => {
         res.json({ ok: true, mode: 'live', profile: webResult.profile });
         return;
       }
-      if (webResult.status === 404) {
-        res.status(404).json({
-          ok: false,
-          error: `Instagram profile @${raw} was not found.`,
-        });
+
+      // If web profile info fails (Instagram web API often returns 404/429 from datacenter IPs),
+      // do NOT return hard 404 — try page HTML and mobile API endpoint:
+      const pageLookup = await findInstagramIdByUsername(raw, cookieHeader);
+      if (pageLookup.profile) {
+        profileCache.set(cacheKey, { profile: pageLookup.profile, timestamp: Date.now() });
+        res.json({ ok: true, mode: 'live', profile: pageLookup.profile });
         return;
       }
-
-      const pageLookup = await findInstagramIdByUsername(raw, cookieHeader);
       if (pageLookup.userId) {
         const infoResult = await findInstagramProfileById(
           pageLookup.userId,
           cookieHeader
         );
         if (infoResult.profile) {
+          profileCache.set(cacheKey, { profile: infoResult.profile, timestamp: Date.now() });
           res.json({ ok: true, mode: 'live', profile: infoResult.profile });
           return;
         }
@@ -862,8 +883,7 @@ router.get('/order-status/:orderId', async (req, res) => {
   res.json({ ok: true, order });
 });
 
-// Mount router on BOTH '/api' and '/' so all path variants work
+// Mount router on '/api'
 app.use('/api', router);
-app.use('/', router);
 
 export default app;
