@@ -7,7 +7,6 @@ const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const CRAWLER_USER_AGENTS = [
-  'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
   'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   'WhatsApp/2.21.12.21 A',
   'Twitterbot/1.0',
@@ -30,6 +29,10 @@ interface IgProfilePayload {
   externalUrl: string | null;
   categoryName: string | null;
 }
+
+// In-memory cache for fast lookups & Instagram rate-limit protection (15 mins TTL)
+const profileCache = new Map<string, { profile: IgProfilePayload; timestamp: number }>();
+const CACHE_TTL_MS = 15 * 60 * 1000;
 
 function buildCookieHeader(): string {
   const fullCookie = (process.env.IG_SESSION_COOKIE || '').trim();
@@ -93,6 +96,25 @@ function decodeHtmlEntities(raw: string): string {
     .replace(/&hellip;/g, '…');
 }
 
+// Matches meta tags whether property comes before content or content comes before property
+function getMetaContent(html: string, namePattern: string): string | null {
+  const r1 = new RegExp(
+    `<meta\\s+[^>]*?(?:property|name)=["']${namePattern}["'][^>]*?content=["']([^"']+)["']`,
+    'i'
+  );
+  const m1 = html.match(r1);
+  if (m1) return decodeHtmlEntities(m1[1]);
+
+  const r2 = new RegExp(
+    `<meta\\s+[^>]*?content=["']([^"']+)["'][^>]*?(?:property|name)=["']${namePattern}["']`,
+    'i'
+  );
+  const m2 = html.match(r2);
+  if (m2) return decodeHtmlEntities(m2[1]);
+
+  return null;
+}
+
 function extractProfileFromHtml(
   username: string,
   userId: string | null,
@@ -100,34 +122,30 @@ function extractProfileFromHtml(
 ): IgProfilePayload | null {
   if (!html) return null;
 
-  let fullNameFromTitle: string | null = null;
+  let fullName: string | null = null;
 
-  // Try og:title first
-  const ogTitleMatch = html.match(
-    /<meta\s+(?:property|name)=["']og:title["']\s+content=["']([^"']+)["']/i
-  );
-  if (ogTitleMatch) {
-    const rawOgTitle = decodeHtmlEntities(ogTitleMatch[1]);
-    const m = rawOgTitle.match(/^([^(•\n]+?)\s*\(@/);
+  // 1. Try og:title first
+  const ogTitleContent = getMetaContent(html, '(?:og:title|title)');
+  if (ogTitleContent) {
+    const m = ogTitleContent.match(/^([^(•\n]+?)\s*(?:\(@|•|-)/);
     if (m && m[1].trim()) {
-      fullNameFromTitle = m[1].trim();
+      fullName = m[1].trim();
     }
   }
 
-  // Fallback to <title>
-  if (!fullNameFromTitle) {
+  // 2. Fallback to <title>
+  if (!fullName) {
     const titleMatch = html.match(
-      /<title>\s*([^<]+?)\s*\(@([a-zA-Z0-9._]+)\)\s*•\s*Instagram/i
+      /<title>\s*([^<]+?)\s*(?:\(@[a-zA-Z0-9._]+\)|•|-|\()/i
     );
-    if (titleMatch) {
-      fullNameFromTitle = decodeHtmlEntities(titleMatch[1].trim());
+    if (titleMatch && titleMatch[1].trim() && !titleMatch[1].toLowerCase().includes('instagram')) {
+      fullName = decodeHtmlEntities(titleMatch[1].trim());
     }
   }
 
-  const descMatch = html.match(
-    /<meta\s+(?:property|name)=["'](?:og:description|description)["']\s+content=["']([^"']+)["']/i
-  );
-  const descContent = descMatch ? decodeHtmlEntities(descMatch[1]) : '';
+  // 3. Stats from og:description or description
+  const descContent =
+    getMetaContent(html, '(?:og:description|description)') || '';
 
   let followersCount: number | null = null;
   let followingCount: number | null = null;
@@ -135,35 +153,30 @@ function extractProfileFromHtml(
   let bioFromDesc: string | null = null;
 
   if (descContent) {
-    const statsMatch = descContent.match(
-      /([0-9.,KMkmBb]+)\s+Followers?,\s*([0-9.,KMkmBb]+)\s+Following,\s*([0-9.,KMkmBb]+)\s+Posts/i
+    const followersMatch = descContent.match(/([0-9.,KMkmBb]+)\s+Followers?/i);
+    const followingMatch = descContent.match(/([0-9.,KMkmBb]+)\s+Following/i);
+    const postsMatch = descContent.match(/([0-9.,KMkmBb]+)\s+Posts?/i);
+
+    if (followersMatch) followersCount = parseAbbreviatedCount(followersMatch[1]);
+    if (followingMatch) followingCount = parseAbbreviatedCount(followingMatch[1]);
+    if (postsMatch) postsCount = parseAbbreviatedCount(postsMatch[1]);
+
+    const bioMatch = descContent.match(
+      /(?:See Instagram photos and videos from|from)\s*[^•-]+[•-]\s*(.*)$/i
     );
-    if (statsMatch) {
-      followersCount = parseAbbreviatedCount(statsMatch[1]);
-      followingCount = parseAbbreviatedCount(statsMatch[2]);
-      postsCount = parseAbbreviatedCount(statsMatch[3]);
-      const afterStats = descContent.replace(statsMatch[0], '').trim();
-      const bioMatch = afterStats.match(
-        /(?:See Instagram photos and videos from|from)\s*[^•-]+[•-]\s*(.*)$/i
-      );
-      if (bioMatch && bioMatch[1].trim()) {
-        bioFromDesc = bioMatch[1].trim();
-      }
+    if (bioMatch && bioMatch[1].trim()) {
+      bioFromDesc = bioMatch[1].trim();
     }
   }
 
-  const imageMatch = html.match(
-    /<meta\s+(?:property|name)=["']og:image["']\s+content=["']([^"']+)["']/i
-  );
-  const rawOgImage = imageMatch ? decodeHtmlEntities(imageMatch[1]) : null;
+  // 4. Avatar from og:image
+  const rawOgImage = getMetaContent(html, 'og:image');
 
-  const urlMatch = html.match(
-    /<meta\s+(?:property|name)=["']og:url["']\s+content=["']([^"']+)["']/i
-  );
-  const canonicalUrl = urlMatch
-    ? urlMatch[1]
-    : `https://www.instagram.com/${username}/`;
+  // 5. Canonical URL
+  const canonicalUrl =
+    getMetaContent(html, 'og:url') || `https://www.instagram.com/${username}/`;
 
+  // 6. JSON-LD fallback
   let jsonUser: any = null;
   const jsonMatches = html.matchAll(
     /<script\s+type=["']application\/ld\+json["']>([^<]+)<\/script>/gi
@@ -182,7 +195,7 @@ function extractProfileFromHtml(
   }
 
   const resolvedFullName =
-    fullNameFromTitle || (jsonUser?.name ? decodeHtmlEntities(jsonUser.name) : null);
+    fullName || (jsonUser?.name ? decodeHtmlEntities(jsonUser.name) : null);
   const resolvedBio =
     (jsonUser?.description ? decodeHtmlEntities(jsonUser.description) : null) ||
     bioFromDesc;
@@ -466,6 +479,14 @@ router.get('/ig/profile/:identifier', async (req, res) => {
     return;
   }
 
+  // Check in-memory cache first
+  const cacheKey = raw.toLowerCase();
+  const cached = profileCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    res.json({ ok: true, mode: 'live', profile: cached.profile });
+    return;
+  }
+
   const buildFallbackProfile = (username: string): IgProfilePayload => ({
     id: null,
     username,
@@ -510,6 +531,7 @@ router.get('/ig/profile/:identifier', async (req, res) => {
     // Primary: fetch via mobile/crawler user agents
     const crawlerProfile = await fetchViaCrawler(raw);
     if (crawlerProfile) {
+      profileCache.set(cacheKey, { profile: crawlerProfile, timestamp: Date.now() });
       res.json({ ok: true, mode: 'live', profile: crawlerProfile });
       return;
     }
@@ -518,6 +540,7 @@ router.get('/ig/profile/:identifier', async (req, res) => {
     if (cookieHeader) {
       const webResult = await fetchViaWebProfileInfo(raw, cookieHeader);
       if (webResult.profile) {
+        profileCache.set(cacheKey, { profile: webResult.profile, timestamp: Date.now() });
         res.json({ ok: true, mode: 'live', profile: webResult.profile });
         return;
       }
