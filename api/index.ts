@@ -9,12 +9,7 @@ const BROWSER_UA =
 const CRAWLER_USER_AGENTS = [
   'Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)',
   'Twitterbot/1.0',
-  'TelegramBot (like TwitterBot)',
-  'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   'WhatsApp/2.21.12.21 A',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 254.0.0.19.109',
-  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-  'Pinterest/0.2 (+http://www.pinterest.com/)',
 ];
 
 interface IgProfilePayload {
@@ -417,7 +412,7 @@ async function fetchViaCrawler(
   for (const ua of CRAWLER_USER_AGENTS) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 4500);
+      const timer = setTimeout(() => controller.abort(), 6000);
 
       const headers: Record<string, string> = {
         'User-Agent': ua,
