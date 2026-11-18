@@ -7,11 +7,10 @@ const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const CRAWLER_USER_AGENTS = [
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 254.0.0.19.109',
   'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   'WhatsApp/2.21.12.21 A',
   'Twitterbot/1.0',
-  'TelegramBot (like TwitterBot)',
-  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
 ];
 
 interface IgProfilePayload {
@@ -138,9 +137,20 @@ function extractProfileFromHtml(
     const titleMatch = html.match(
       /<title>\s*([^<]+?)\s*(?:\(@[a-zA-Z0-9._]+\)|•|-|\()/i
     );
-    if (titleMatch && titleMatch[1].trim() && !titleMatch[1].toLowerCase().includes('instagram')) {
+    if (titleMatch && titleMatch[1].trim()) {
       fullName = decodeHtmlEntities(titleMatch[1].trim());
     }
+  }
+
+  // Filter out generic/login titles
+  if (
+    fullName &&
+    (fullName.toLowerCase() === 'login' ||
+      fullName.toLowerCase() === 'instagram' ||
+      fullName.toLowerCase().includes('welcome back') ||
+      fullName.toLowerCase().includes('see instagram photos'))
+  ) {
+    fullName = null;
   }
 
   // 3. Stats from og:description or description
@@ -401,9 +411,7 @@ async function fetchViaCrawler(
         const profile = extractProfileFromHtml(username, null, html);
         if (
           profile &&
-          (profile.profilePicUrl ||
-            profile.followersCount !== null ||
-            profile.fullName)
+          (profile.profilePicUrl || profile.followersCount !== null)
         ) {
           return profile;
         }
