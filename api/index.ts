@@ -7,11 +7,17 @@ const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const CRAWLER_USER_AGENTS = [
+  'Twitterbot/1.0',
+  'TelegramBot (like TwitterBot)',
+  'Discordbot/2.0 (+https://discordapp.com)',
+  'Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)',
+  'LinkedInBot/1.0 (compatible; Mozilla/5.0; Apache-HttpClient +http://www.linkedin.com)',
+  'Pinterest/0.2 (+http://www.pinterest.com/)',
+  'Applebot/0.1 (+http://www.apple.com/go/applebot)',
   'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 254.0.0.19.109',
   'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   'WhatsApp/2.21.12.21 A',
   'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-  'Twitterbot/1.0',
 ];
 
 interface IgProfilePayload {
