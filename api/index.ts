@@ -409,9 +409,7 @@ async function findInstagramProfileById(
 async function fetchViaCrawler(
   username: string
 ): Promise<IgProfilePayload | null> {
-  let partialCandidate: IgProfilePayload | null = null;
-
-  for (const ua of CRAWLER_USER_AGENTS) {
+  const fetchWithUa = async (ua: string): Promise<IgProfilePayload | null> => {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 6000);
@@ -429,36 +427,39 @@ async function fetchViaCrawler(
       });
       clearTimeout(timer);
 
-      if (response.status === 404) continue;
-
-      if (response.ok) {
-        const html = await response.text();
-        const profile = extractProfileFromHtml(username, null, html);
-        if (profile) {
-          // If we have full details (both avatar and follower count/name), return immediately
-          if (
-            profile.followersCount !== null &&
-            (profile.profilePicUrl || profile.fullName)
-          ) {
-            return profile;
-          }
-          // Otherwise keep partial candidate and try remaining crawlers
-          if (
-            !partialCandidate &&
-            (profile.profilePicUrl ||
-              profile.followersCount !== null ||
-              profile.fullName ||
-              profile.postsCount !== null)
-          ) {
-            partialCandidate = profile;
-          }
-        }
-      }
+      if (!response.ok) return null;
+      const html = await response.text();
+      return extractProfileFromHtml(username, null, html);
     } catch {
-      continue;
+      return null;
+    }
+  };
+
+  const results = await Promise.all(
+    CRAWLER_USER_AGENTS.map((ua) => fetchWithUa(ua))
+  );
+
+  // 1. Prioritize complete profile (followersCount + avatar or name)
+  for (const p of results) {
+    if (p && p.followersCount !== null && (p.profilePicUrl || p.fullName)) {
+      return p;
     }
   }
-  return partialCandidate;
+
+  // 2. Otherwise return any candidate with at least one data point
+  for (const p of results) {
+    if (
+      p &&
+      (p.profilePicUrl ||
+        p.followersCount !== null ||
+        p.fullName ||
+        p.postsCount !== null)
+    ) {
+      return p;
+    }
+  }
+
+  return null;
 }
 
 // ── DivinePay Gateway Integration ──
