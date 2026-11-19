@@ -7,9 +7,6 @@ import {
   Info,
   Loader2,
   RotateCcw,
-  Users,
-  UserCheck,
-  Image,
 } from 'lucide-react';
 import { VerifiedAccount } from '../data/packs';
 
@@ -26,17 +23,6 @@ function normalizeHandle(raw: string): string {
     .replace(/^https?:\/\/(www\.)?instagram\.com\//i, '')
     .split(/[/?#]/)[0]
     .trim();
-}
-
-function formatStatCount(count: number | null): string {
-  if (count === null || typeof count !== 'number') return '—';
-  if (count >= 1_000_000) {
-    return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-  }
-  if (count >= 10_000) {
-    return `${(count / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
-  }
-  return count.toLocaleString('en-IN');
 }
 
 export function StepVerifyCard({
@@ -115,9 +101,18 @@ export function StepVerifyCard({
         };
       };
 
-      if (!res.ok || !data.ok || !data.profile) {
+      if (!res.ok || !data.ok || !data.profile || !data.profile.profilePicUrl) {
         setErrorMessage(
-          data.error || 'Could not verify this Instagram profile.'
+          data.error ||
+            'Instagram profile or profile picture could not be verified. Only valid public accounts with a verified profile picture can proceed.'
+        );
+        setIsVerifying(false);
+        return;
+      }
+
+      if (data.profile.isPrivate) {
+        setErrorMessage(
+          'This account is set to Private. Please change your account to Public in Instagram settings before ordering followers.'
         );
         setIsVerifying(false);
         return;
@@ -136,38 +131,9 @@ export function StepVerifyCard({
         }),
       });
     } catch (err) {
-      // If the fetch itself failed (network error, DNS, CORS, etc.)
-      // we still let the user proceed with a client-side fallback
-      const cleanHandle = normalizeHandle(usernameInput);
-      if (cleanHandle && /^[a-zA-Z0-9._]{2,30}$/.test(cleanHandle)) {
-        onVerifySuccess({
-          id: null,
-          username: cleanHandle,
-          profileUrl: `https://www.instagram.com/${cleanHandle}/`,
-          fullName: null,
-          bio: null,
-          profilePicUrl: null,
-          followersCount: null,
-          followingCount: null,
-          postsCount: null,
-          isPrivate: false,
-          isVerified: false,
-          externalUrl: null,
-          categoryName: null,
-          lookupMode: 'unauthenticated_fallback',
-          notice:
-            'Could not reach the verification server. Username accepted — you can proceed.',
-          verifiedAt: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-        });
-        setUsernameInput(cleanHandle);
-      } else {
-        setErrorMessage(
-          'Network error while verifying Instagram profile. Please check your connection and try again.'
-        );
-      }
+      setErrorMessage(
+        'Network error while verifying Instagram profile. Please check your connection and try again.'
+      );
     } finally {
       setIsVerifying(false);
     }
@@ -292,49 +258,6 @@ export function StepVerifyCard({
                   />
                 </div>
               </div>
-
-              {/* Stats Row — only show when we have actual data */}
-              {(verifiedAccount.postsCount !== null ||
-                verifiedAccount.followersCount !== null ||
-                verifiedAccount.followingCount !== null) && (
-              <div className="w-full grid grid-cols-3 gap-2 mt-1">
-                <div className="flex flex-col items-center gap-1 py-3 rounded-xl bg-white/[0.06] border border-white/[0.08] backdrop-blur-sm hover:bg-white/[0.1] transition-colors">
-                  <Image className="w-4 h-4 text-[#93C5FD] mb-0.5" />
-                  <p className="text-lg sm:text-xl font-extrabold font-num tabular-nums text-white leading-none">
-                    {formatStatCount(verifiedAccount.postsCount)}
-                  </p>
-                  <p className="text-[11px] font-medium text-[#7EB4F5] uppercase tracking-wider">
-                    Posts
-                  </p>
-                </div>
-                <div className="flex flex-col items-center gap-1 py-3 rounded-xl bg-white/[0.06] border border-white/[0.08] backdrop-blur-sm hover:bg-white/[0.1] transition-colors">
-                  <Users className="w-4 h-4 text-[#93C5FD] mb-0.5" />
-                  <p className="text-lg sm:text-xl font-extrabold font-num tabular-nums text-white leading-none">
-                    {formatStatCount(verifiedAccount.followersCount)}
-                  </p>
-                  <p className="text-[11px] font-medium text-[#7EB4F5] uppercase tracking-wider">
-                    Followers
-                  </p>
-                </div>
-                <div className="flex flex-col items-center gap-1 py-3 rounded-xl bg-white/[0.06] border border-white/[0.08] backdrop-blur-sm hover:bg-white/[0.1] transition-colors">
-                  <UserCheck className="w-4 h-4 text-[#93C5FD] mb-0.5" />
-                  <p className="text-lg sm:text-xl font-extrabold font-num tabular-nums text-white leading-none">
-                    {formatStatCount(verifiedAccount.followingCount)}
-                  </p>
-                  <p className="text-[11px] font-medium text-[#7EB4F5] uppercase tracking-wider">
-                    Following
-                  </p>
-                </div>
-              </div>
-              )}
-
-              {/* Fallback notice */}
-              {verifiedAccount.notice && (
-                <div className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs font-medium">
-                  <Info className="w-3.5 h-3.5 shrink-0" />
-                  <span>{verifiedAccount.notice}</span>
-                </div>
-              )}
 
               {/* Private account warning */}
               {verifiedAccount.isPrivate && (

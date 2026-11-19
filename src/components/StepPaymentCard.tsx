@@ -295,9 +295,16 @@ export function StepPaymentCard({
 
   const handleContinueClick = async () => {
     setErrorMessage(null);
-    if (!verifiedAccount) {
+    if (!verifiedAccount || !verifiedAccount.profilePicUrl) {
       setErrorMessage(
-        'Please verify your Instagram username in Step 1 first.'
+        'Please enter and verify a valid Instagram username with a profile picture in Step 1 first.'
+      );
+      onFocusVerify();
+      return;
+    }
+    if (verifiedAccount.isPrivate) {
+      setErrorMessage(
+        'Your Instagram account is Private. Followers can only be delivered to Public accounts. Please switch your account to Public in Instagram first.'
       );
       onFocusVerify();
       return;
@@ -376,8 +383,14 @@ export function StepPaymentCard({
     e.preventDefault();
     setErrorMessage(null);
 
-    if (!verifiedAccount || !selectedPack) {
-      setErrorMessage('Complete Step 1 and Step 2 before placing the order.');
+    if (!verifiedAccount || !verifiedAccount.profilePicUrl || !selectedPack) {
+      setErrorMessage('Complete Step 1 with a verified profile picture and Step 2 before placing the order.');
+      return;
+    }
+    if (verifiedAccount.isPrivate) {
+      setErrorMessage(
+        'Your Instagram account is Private. Followers can only be delivered to Public accounts. Please switch to Public first.'
+      );
       return;
     }
 

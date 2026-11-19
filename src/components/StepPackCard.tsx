@@ -17,28 +17,21 @@ export function StepPackCard({
       className="rounded-3xl bg-white border border-[#D4E4FA] shadow-[0_12px_32px_-20px_rgba(6,42,97,0.16)] p-4 sm:p-7"
     >
       {/* Step Header */}
-      <div className="flex items-center justify-between gap-3 mb-4 sm:mb-5">
-        <div className="flex items-center gap-3">
-          <span className="h-8 w-8 rounded-full bg-[#0058D6] text-white text-sm font-bold font-num flex items-center justify-center shrink-0">
-            2
-          </span>
-          <div>
-            <h2
-              id="step-2-heading"
-              className="text-base sm:text-lg font-extrabold tracking-tight text-[#062A61] uppercase leading-tight"
-            >
-              Select Followers Pack
-            </h2>
-            <p className="text-xs text-[#5B78A3] hidden sm:block mt-0.5">
-              Instant start · Non-drop guarantee · Safe delivery
-            </p>
-          </div>
-        </div>
-
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#EBF3FF] border border-[#CDE0FD] text-[11px] font-semibold text-[#0058D6]">
-          <Zap className="w-3 h-3 text-[#0068FF]" />
-          Instant Delivery
+      <div className="flex items-center gap-3 mb-4 sm:mb-5">
+        <span className="h-8 w-8 rounded-full bg-[#0058D6] text-white text-sm font-bold font-num flex items-center justify-center shrink-0">
+          2
         </span>
+        <div>
+          <h2
+            id="step-2-heading"
+            className="text-base sm:text-lg font-extrabold tracking-tight text-[#062A61] uppercase leading-tight"
+          >
+            Select Followers Pack
+          </h2>
+          <p className="text-xs text-[#5B78A3] hidden sm:block mt-0.5">
+            Instant start · Non-drop guarantee · Safe delivery
+          </p>
+        </div>
       </div>
 
       {/* Pack Tiles Grid */}

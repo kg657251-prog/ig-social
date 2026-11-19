@@ -238,7 +238,10 @@ function extractProfileFromHtml(
     followersCount,
     followingCount,
     postsCount,
-    isPrivate: false,
+    isPrivate:
+      html.includes('"is_private":true') ||
+      /This account is private/i.test(html) ||
+      /This Account is Private/i.test(html),
     isVerified: html.includes('"is_verified":true'),
     externalUrl: null,
     categoryName: null,
@@ -445,22 +448,16 @@ async function fetchViaCrawler(
     CRAWLER_USER_AGENTS.map((ua) => fetchWithUa(ua))
   );
 
-  // 1. Prioritize complete profile (followersCount + avatar or name)
+  // 1. Prioritize complete profile with profile picture
   for (const p of results) {
-    if (p && p.followersCount !== null && (p.profilePicUrl || p.fullName)) {
+    if (p && p.profilePicUrl && (p.followersCount !== null || p.fullName)) {
       return p;
     }
   }
 
-  // 2. Otherwise return any candidate with at least one data point
+  // 2. Otherwise return any candidate that has a verified profile picture
   for (const p of results) {
-    if (
-      p &&
-      (p.profilePicUrl ||
-        p.followersCount !== null ||
-        p.fullName ||
-        p.postsCount !== null)
-    ) {
+    if (p && p.profilePicUrl) {
       return p;
     }
   }
@@ -538,61 +535,35 @@ router.get('/ig/profile/:identifier', async (req, res) => {
     return;
   }
 
-  // Check in-memory cache first
+  // Check in-memory cache first (only if valid profile picture is present)
   const cacheKey = raw.toLowerCase();
   const cached = profileCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+  if (cached && cached.profile?.profilePicUrl && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     res.json({ ok: true, mode: 'live', profile: cached.profile });
     return;
   }
-
-  const buildFallbackProfile = (username: string): IgProfilePayload => ({
-    id: null,
-    username,
-    profileUrl: `https://www.instagram.com/${username}/`,
-    fullName: null,
-    bio: null,
-    profilePicUrl: null,
-    followersCount: null,
-    followingCount: null,
-    postsCount: null,
-    isPrivate: false,
-    isVerified: false,
-    externalUrl: null,
-    categoryName: null,
-  });
 
   const cookieHeader = buildCookieHeader();
 
   try {
     if (isNumericId) {
       const byIdResult = await findInstagramProfileById(raw, cookieHeader);
-      if (byIdResult.profile) {
+      if (byIdResult.profile && byIdResult.profile.profilePicUrl) {
+        profileCache.set(cacheKey, { profile: byIdResult.profile, timestamp: Date.now() });
         res.json({ ok: true, mode: 'live', profile: byIdResult.profile });
         return;
       }
-      if (byIdResult.status === 404) {
-        res.status(404).json({
-          ok: false,
-          error: `Instagram User ID ${raw} was not found.`,
-        });
-        return;
-      }
-      res.json({
-        ok: true,
-        mode: 'unauthenticated_fallback',
-        notice: 'Could not fetch full profile details. Username accepted.',
-        profile: buildFallbackProfile(raw),
+      res.status(404).json({
+        ok: false,
+        error: `Instagram User ID ${raw} could not be verified.`,
       });
       return;
     }
 
     // Primary: fetch via mobile/crawler user agents
     const crawlerProfile = await fetchViaCrawler(raw);
-    if (crawlerProfile) {
-      if (crawlerProfile.followersCount !== null) {
-        profileCache.set(cacheKey, { profile: crawlerProfile, timestamp: Date.now() });
-      }
+    if (crawlerProfile && crawlerProfile.profilePicUrl) {
+      profileCache.set(cacheKey, { profile: crawlerProfile, timestamp: Date.now() });
       res.json({ ok: true, mode: 'live', profile: crawlerProfile });
       return;
     }
@@ -600,16 +571,14 @@ router.get('/ig/profile/:identifier', async (req, res) => {
     // Secondary: fetch via web profile info API or authenticated HTML / ID lookup
     if (cookieHeader) {
       const webResult = await fetchViaWebProfileInfo(raw, cookieHeader);
-      if (webResult.profile) {
+      if (webResult.profile && webResult.profile.profilePicUrl) {
         profileCache.set(cacheKey, { profile: webResult.profile, timestamp: Date.now() });
         res.json({ ok: true, mode: 'live', profile: webResult.profile });
         return;
       }
 
-      // If web profile info fails (Instagram web API often returns 404/429 from datacenter IPs),
-      // do NOT return hard 404 — try page HTML and mobile API endpoint:
       const pageLookup = await findInstagramIdByUsername(raw, cookieHeader);
-      if (pageLookup.profile) {
+      if (pageLookup.profile && pageLookup.profile.profilePicUrl) {
         profileCache.set(cacheKey, { profile: pageLookup.profile, timestamp: Date.now() });
         res.json({ ok: true, mode: 'live', profile: pageLookup.profile });
         return;
@@ -619,7 +588,7 @@ router.get('/ig/profile/:identifier', async (req, res) => {
           pageLookup.userId,
           cookieHeader
         );
-        if (infoResult.profile) {
+        if (infoResult.profile && infoResult.profile.profilePicUrl) {
           profileCache.set(cacheKey, { profile: infoResult.profile, timestamp: Date.now() });
           res.json({ ok: true, mode: 'live', profile: infoResult.profile });
           return;
@@ -627,33 +596,17 @@ router.get('/ig/profile/:identifier', async (req, res) => {
       }
     }
 
-    // Fallback: accept username
-    res.json({
-      ok: true,
-      mode: 'unauthenticated_fallback',
-      notice:
-        'Instagram profile details could not be loaded right now, but your username has been accepted.',
-      profile: buildFallbackProfile(raw),
+    // Strictly enforce: No unauthenticated fallback. If profile picture / profile could not be fetched, reject!
+    res.status(404).json({
+      ok: false,
+      error: `Instagram account "@${raw}" could not be verified or profile picture not found. Please ensure the account is public and spelled correctly.`,
     });
   } catch (err) {
     console.error('[IG Lookup Error]', err);
-    if (isValidUsername) {
-      res.json({
-        ok: true,
-        mode: 'unauthenticated_fallback',
-        notice:
-          'Instagram verification is temporarily unavailable. Your username has been accepted.',
-        profile: buildFallbackProfile(raw),
-      });
-    } else {
-      res.status(502).json({
-        ok: false,
-        error:
-          err instanceof Error
-            ? `Failed to reach Instagram lookup service: ${err.message}`
-            : 'Failed to verify Instagram profile.',
-      });
-    }
+    res.status(502).json({
+      ok: false,
+      error: `Failed to verify Instagram profile for "@${raw}". Please check your internet connection or username and try again.`,
+    });
   }
 });
 
@@ -824,6 +777,24 @@ router.post('/create-payment', async (req, res) => {
     }
 
     const safeUsername = String(username || '').trim().replace(/^@+/, '');
+    if (!safeUsername) {
+      res.status(400).json({
+        success: false,
+        error: 'A valid Instagram username is required.',
+      });
+      return;
+    }
+
+    // Require verified profile picture before payment order can be created
+    const cachedProfile = profileCache.get(safeUsername.toLowerCase());
+    const verifiedPic = profilePicUrl || cachedProfile?.profile?.profilePicUrl;
+    if (!verifiedPic) {
+      res.status(400).json({
+        success: false,
+        error: `Instagram account "@${safeUsername}" is not verified. Only public accounts with a verified profile picture can proceed to checkout.`,
+      });
+      return;
+    }
     const cleanCustomerName = String(
       customer_name || fullName || safeUsername || 'Customer'
     ).trim();
