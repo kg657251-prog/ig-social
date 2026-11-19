@@ -1,6 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
 import crypto from 'node:crypto';
+import dns from 'node:dns';
+import https from 'node:https';
+
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {}
 
 const IG_APP_ID = '936619743392459';
 const BROWSER_UA =
@@ -462,7 +468,7 @@ async function fetchViaCrawler(
   return null;
 }
 
-// ── DivinePay Gateway Integration ──
+// ── Pay0 Gateway Integration ──
 
 interface PaymentOrderRecord {
   orderId: string;
@@ -472,6 +478,8 @@ interface PaymentOrderRecord {
   gatewayId?: string;
   checkoutUrl?: string;
   username?: string;
+  fullName?: string;
+  profilePicUrl?: string | null;
   packId?: string;
   quantity?: number;
   utr?: string;
@@ -479,6 +487,10 @@ interface PaymentOrderRecord {
   amountPaid?: number;
   createdAt: string;
   updatedAt?: string;
+  smmOrderId?: string | number;
+  smmStatus?: 'pending' | 'submitted' | 'failed';
+  smmError?: string;
+  smmSubmittedAt?: string;
 }
 
 const orderStore = new Map<string, PaymentOrderRecord>();
@@ -689,21 +701,118 @@ router.get('/ig/avatar', async (req, res) => {
   }
 });
 
-// DivinePay: Create Pay-In
+// ── Pay0 Payment Gateway Integration ──
+const PAY0_DEFAULT_API_KEY = 'bd721fbe63b2185ebc5a3d64dbaf1ae3';
+const PAY0_DEFAULT_SECRET = 'Ij5BmHSP1C687078021';
+
+async function postPay0Form(
+  endpoint: string,
+  formBody: string,
+  timeoutMs = 15000
+): Promise<{ status: number; data: any }> {
+  // 1. Try global fetch first
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json, text/plain, */*',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      body: formBody,
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+
+    const text = await res.text();
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+    return { status: res.status, data: parsed };
+  } catch (fetchErr: any) {
+    console.warn(
+      `[Pay0 Request] fetch failed (${fetchErr?.message || fetchErr}), falling back to native HTTPS...`
+    );
+
+    // 2. Fallback to native node:https.request
+    return new Promise((resolve, reject) => {
+      const url = new URL(endpoint);
+      const req = https.request(
+        {
+          hostname: url.hostname,
+          port: 443,
+          path: url.pathname,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(formBody),
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          let chunks = '';
+          res.on('data', (d) => (chunks += d));
+          res.on('end', () => {
+            try {
+              resolve({
+                status: res.statusCode || 200,
+                data: JSON.parse(chunks),
+              });
+            } catch {
+              resolve({ status: res.statusCode || 200, data: chunks });
+            }
+          });
+        }
+      );
+
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Pay0 request timed out after ' + timeoutMs + 'ms'));
+      });
+
+      req.on('error', (err) => {
+        reject(err);
+      });
+
+      req.write(formBody);
+      req.end();
+    });
+  }
+}
+
+// Pay0: Create Pay-In Order
 router.post('/create-payment', async (req, res) => {
   try {
-    const apiKey = (process.env.DIVINEPAY_API_KEY || '').trim();
+    const apiKey = (process.env.PAY0_API_KEY || PAY0_DEFAULT_API_KEY).trim();
 
     if (!apiKey) {
       res.status(500).json({
         success: false,
-        error:
-          'DivinePay payment credentials are not configured in server environment.',
+        error: 'Pay0 payment credentials are not configured.',
       });
       return;
     }
 
-    const { amount, order_id, username, pack_id, quantity } = req.body || {};
+    const {
+      amount,
+      order_id,
+      username,
+      fullName,
+      profilePicUrl,
+      pack_id,
+      quantity,
+      customer_name,
+      customer_phone,
+    } = req.body || {};
 
     const numericAmount = Number(amount);
     if (!numericAmount || numericAmount <= 0) {
@@ -715,88 +824,191 @@ router.post('/create-payment', async (req, res) => {
     }
 
     const safeUsername = String(username || '').trim().replace(/^@+/, '');
+    const cleanCustomerName = String(
+      customer_name || fullName || safeUsername || 'Customer'
+    ).trim();
+    const cleanCustomerMobile = String(customer_phone || '9999999999').replace(
+      /\D/g,
+      ''
+    ) || '9999999999';
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    // Generate unique order ID if not provided
+    const orderId =
+      order_id ||
+      `ORD${Date.now()}${Math.floor(100 + Math.random() * 900)}`;
 
-    let upstreamRes: Response;
-    try {
-      upstreamRes = await fetch(
-        'https://divinepay.us.cc/api/payin/payin/create',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-          },
-          body: JSON.stringify({
-            amount: numericAmount,
-          }),
-          signal: controller.signal,
-        }
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    // Resolve site callback/redirect URL
+    const proto =
+      (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+    const host = req.get('host') || 'localhost:3000';
+    const siteUrl = (
+      process.env.SITE_URL ||
+      process.env.APP_URL ||
+      `${proto}://${host}`
+    ).replace(/\/+$/, '');
+    const redirectUrl = `${siteUrl}/?order_id=${encodeURIComponent(orderId)}`;
 
-    const data = (await upstreamRes.json().catch(() => null)) as any;
+    const formParams = new URLSearchParams({
+      customer_mobile: cleanCustomerMobile,
+      customer_name: cleanCustomerName,
+      user_token: apiKey,
+      amount: String(numericAmount),
+      order_id: orderId,
+      redirect_url: redirectUrl,
+      remark1: `@${safeUsername}`,
+      remark2: `${quantity || ''} Followers`,
+    });
+
+    const { status: upstreamStatus, data } = await postPay0Form(
+      'https://api.pay0.shop/apiv1/create-order',
+      formParams.toString(),
+      15000
+    );
 
     const checkoutUrl =
-      data?.data?.paymentUrl ||
-      data?.paymentUrl ||
-      data?.checkout_url ||
-      data?.data?.checkout_url;
-
-    const orderId =
-      data?.data?.order_id || data?.order_id || order_id || `ORD_${Date.now()}`;
+      data?.result?.payment_url ||
+      data?.payment_url ||
+      data?.data?.payment_url;
+    const resultOrderId =
+      data?.result?.orderId || data?.orderId || orderId;
 
     if (
-      (upstreamRes.status === 200 || upstreamRes.status === 201) &&
-      data?.success &&
+      (upstreamStatus === 200 || upstreamStatus === 201) &&
+      data?.status &&
       checkoutUrl
     ) {
-      orderStore.set(orderId, {
-        orderId,
+      const record: PaymentOrderRecord = {
+        orderId: resultOrderId,
         amount: numericAmount,
         currency: 'INR',
         status: 'pending',
-        gatewayId: orderId,
+        gatewayId: resultOrderId,
         checkoutUrl,
         username: safeUsername,
+        fullName: cleanCustomerName,
+        profilePicUrl: profilePicUrl || null,
         packId: pack_id,
-        quantity,
+        quantity: Number(quantity) || 0,
         createdAt: new Date().toISOString(),
-      });
+      };
+
+      orderStore.set(resultOrderId, record);
+      if (resultOrderId !== orderId) {
+        orderStore.set(orderId, record);
+      }
 
       res.status(200).json({
         success: true,
         paymentUrl: checkoutUrl,
-        orderId,
+        orderId: resultOrderId,
         data,
       });
     } else {
       const errorMsg =
         data?.message ||
         data?.error ||
-        `DivinePay payment creation failed (HTTP ${upstreamRes.status})`;
-      res.status(upstreamRes.status >= 400 ? upstreamRes.status : 502).json({
+        `Pay0 payment creation failed (HTTP ${upstreamStatus})`;
+      res.status(upstreamStatus >= 400 ? upstreamStatus : 502).json({
         success: false,
         error: errorMsg,
         details: data,
       });
     }
   } catch (err: any) {
-    const isTimeout = err?.name === 'AbortError';
+    console.error('[Pay0 create-payment error]:', err);
     res.status(504).json({
       success: false,
-      error: isTimeout
-        ? 'DivinePay gateway timed out after 10 seconds. Please try again.'
-        : `Payment creation failed: ${err?.message || 'Unknown error'}`,
+      error: `Payment creation failed: ${err?.message || 'Unknown error'}`,
     });
   }
 });
 
-// DivinePay: Payment Callback Webhook
+// ── SMM Turk Fulfillment Integration ──
+const SMM_TURK_DEFAULT_API_KEY = '921c1c7e4af362940d41656621f0c888';
+const SMM_TURK_DEFAULT_SERVICE_ID = '14783';
+
+async function fulfillSmmTurkOrder(order: PaymentOrderRecord): Promise<void> {
+  // Deduplication check: if order is already submitted or in-flight, skip!
+  if (!order || order.smmOrderId || order.smmStatus === 'submitted') {
+    return;
+  }
+
+  const rawUsername = String(order.username || '').trim().replace(/^@+/, '');
+  if (!rawUsername) {
+    console.warn(
+      `[SMM Turk] Cannot fulfill order ${order.orderId}: missing username`
+    );
+    return;
+  }
+
+  // Mark in-flight immediately to prevent race conditions between webhook and redirect polling
+  order.smmStatus = 'submitted';
+
+  const apiKey = (
+    process.env.SMM_TURK_API_KEY || SMM_TURK_DEFAULT_API_KEY
+  ).trim();
+  const serviceId = (
+    process.env.SMM_TURK_SERVICE_ID || SMM_TURK_DEFAULT_SERVICE_ID
+  ).trim();
+  const quantity = Math.max(10, Number(order.quantity) || 10);
+  const link = `https://www.instagram.com/${rawUsername}`;
+
+  console.log(
+    `[SMM Turk] Submitting order fulfillment for ${order.orderId}: @${rawUsername}, quantity: ${quantity}, service: ${serviceId}`
+  );
+
+  try {
+    const formParams = new URLSearchParams({
+      key: apiKey,
+      action: 'add',
+      service: serviceId,
+      link: link,
+      quantity: String(quantity),
+    });
+
+    const res = await fetch('https://smmturk.org/api/v2', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      body: formParams.toString(),
+    });
+
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
+
+    console.log(`[SMM Turk Response] Order ${order.orderId}:`, data);
+
+    if (data?.order) {
+      order.smmOrderId = data.order;
+      order.smmStatus = 'submitted';
+      order.smmSubmittedAt = new Date().toISOString();
+      console.log(
+        `[SMM Turk Success] Order ${order.orderId} fulfilled! SMM Turk Order ID: ${data.order}`
+      );
+    } else {
+      order.smmStatus = 'failed';
+      order.smmError = data?.error || 'Unknown SMM Turk error';
+      console.error(
+        `[SMM Turk Error] Order ${order.orderId}:`,
+        data?.error || text
+      );
+    }
+  } catch (err: any) {
+    order.smmStatus = 'failed';
+    order.smmError = err?.message || 'Network error contacting SMM Turk';
+    console.error(`[SMM Turk Exception] Order ${order.orderId}:`, err);
+  }
+}
+
+// Pay0: Webhook Callback
 const handlePaymentCallback = async (
   req: express.Request,
   res: express.Response
@@ -807,7 +1019,7 @@ const handlePaymentCallback = async (
       ...(typeof req.body === 'object' && req.body !== null ? req.body : {}),
     };
 
-    console.log('[DivinePay Webhook] Received:', {
+    console.log('[Pay0 Webhook] Received:', {
       method: req.method,
       query: req.query,
       body: req.body,
@@ -816,85 +1028,135 @@ const handlePaymentCallback = async (
     const orderId = String(
       payload.order_id ||
         payload.orderId ||
-        payload.platOrderNum ||
-        payload.merchant_order_id ||
+        payload.order_no ||
         ''
     ).trim();
 
-    const status = String(payload.status || '').toLowerCase();
-    const amount =
-      Number(payload.realAmount || payload.orderAmount || payload.amount) || 0;
+    const status = String(payload.status || '').toUpperCase();
+    const amount = Number(payload.amount || payload.orderAmount) || 0;
     const utr = String(payload.utr || '').trim();
+    const receivedHash = String(payload.hash || '').trim();
 
-    const isSuccessful = [
-      'success',
-      'paid',
-      'completed',
-      'trade_success',
-      '1',
-    ].includes(status);
+    const secretKey = (process.env.PAY0_SECRET || PAY0_DEFAULT_SECRET).trim();
+    const expectedHash = crypto
+      .createHmac('sha256', secretKey)
+      .update(orderId)
+      .digest('hex');
 
-    if (orderId && orderStore.has(orderId)) {
-      const existing = orderStore.get(orderId)!;
-      orderStore.set(orderId, {
-        ...existing,
-        status: isSuccessful ? 'paid' : (status as any) || existing.status,
-        utr: utr || existing.utr,
-        gatewayTransactionId: utr || existing.gatewayTransactionId,
-        amountPaid: amount || existing.amount,
-        updatedAt: new Date().toISOString(),
-      });
+    const isValidSignature =
+      !receivedHash ||
+      receivedHash.toLowerCase() === expectedHash.toLowerCase();
+
+    if (!isValidSignature) {
+      console.warn('[Pay0 Webhook] Invalid HMAC signature for order:', orderId);
+      res.status(403).json({ success: false, error: 'Invalid signature' });
+      return;
     }
 
-    res.status(200).json({ success: true });
+    const isSuccessful = ['SUCCESS', 'PAID', 'COMPLETED', '1'].includes(
+      status
+    );
+
+    if (orderId) {
+      const existing = orderStore.get(orderId);
+      if (existing) {
+        orderStore.set(orderId, {
+          ...existing,
+          status: isSuccessful ? 'paid' : existing.status,
+          utr: utr || existing.utr,
+          gatewayTransactionId: utr || existing.gatewayTransactionId,
+          amountPaid: amount || existing.amountPaid || existing.amount,
+          updatedAt: new Date().toISOString(),
+        });
+
+        if (isSuccessful) {
+          fulfillSmmTurkOrder(orderStore.get(orderId)!).catch(() => {});
+        }
+      }
+    }
+
+    res.status(200).json({ success: true, message: 'Webhook processed' });
   } catch (err: any) {
-    console.error('[DivinePay Webhook] Error:', err);
+    console.error('[Pay0 Webhook] Error:', err);
     res.status(500).json({ success: false, error: 'Internal webhook error' });
   }
 };
 
 router.post('/payment-callback', handlePaymentCallback);
 router.get('/payment-callback', handlePaymentCallback);
+router.post('/pay0/webhook', handlePaymentCallback);
 router.post('/callback/notify', handlePaymentCallback);
 
-// DivinePay: Check Order Status
+// Pay0: Check Order Status
 router.get('/order-status/:orderId', async (req, res) => {
   const id = String(req.params.orderId || '').trim();
   let order = orderStore.get(id);
 
-  if (order && order.status === 'pending') {
-    const apiKey = (process.env.DIVINEPAY_API_KEY || '').trim();
-    if (apiKey) {
-      try {
-        const statusRes = await fetch(
-          'https://divinepay.us.cc/api/payin/status',
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': apiKey,
-            },
-            body: JSON.stringify({ order_id: id }),
-          }
-        );
-        if (statusRes.ok) {
-          const statusData = (await statusRes.json().catch(() => null)) as any;
-          const remoteStatus = String(
-            statusData?.data?.status || statusData?.status || ''
-          ).toLowerCase();
+  const apiKey = (process.env.PAY0_API_KEY || PAY0_DEFAULT_API_KEY).trim();
 
-          if (['success', 'paid', 'completed'].includes(remoteStatus)) {
+  // If order is pending or not found in memory, query Pay0 live API
+  if ((!order || order.status === 'pending') && apiKey && id) {
+    try {
+      const checkParams = new URLSearchParams({
+        user_token: apiKey,
+        order_id: id,
+      });
+
+      const { status: checkHttpStatus, data: statusData } = await postPay0Form(
+        'https://api.pay0.shop/apiv1/check-order-status',
+        checkParams.toString(),
+        12000
+      );
+
+      if (checkHttpStatus === 200 && statusData?.status) {
+        const txnStatus = String(
+          statusData?.result?.txnStatus || ''
+        ).toUpperCase();
+
+        if (txnStatus === 'SUCCESS') {
+          const remoteAmount =
+            Number(statusData?.result?.amount) || (order ? order.amount : 0);
+          const remoteUtr = String(statusData?.result?.utr || '').trim();
+
+          if (order) {
             order = {
               ...order,
               status: 'paid',
-              amountPaid: statusData?.data?.amount || order.amount,
+              utr: remoteUtr || order.utr,
+              gatewayTransactionId: remoteUtr || order.gatewayTransactionId,
+              amountPaid: remoteAmount || order.amount,
               updatedAt: new Date().toISOString(),
+            };
+            orderStore.set(id, order);
+          } else {
+            // Restore order record from live Pay0 response
+            order = {
+              orderId: id,
+              amount: remoteAmount,
+              currency: 'INR',
+              status: 'paid',
+              utr: remoteUtr,
+              gatewayTransactionId: remoteUtr,
+              amountPaid: remoteAmount,
+              createdAt: statusData?.result?.date || new Date().toISOString(),
             };
             orderStore.set(id, order);
           }
         }
-      } catch {}
+      }
+    } catch (checkErr) {
+      console.error('[Pay0 Status Check] Error querying live status:', checkErr);
     }
+  }
+
+  // If order is paid and hasn't been fulfilled on SMM Turk yet, fulfill it!
+  if (
+    order &&
+    order.status === 'paid' &&
+    !order.smmOrderId &&
+    order.smmStatus !== 'submitted'
+  ) {
+    fulfillSmmTurkOrder(order).catch(() => {});
   }
 
   if (!order) {

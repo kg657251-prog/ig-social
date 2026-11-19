@@ -13,11 +13,13 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  FOLLOWER_PACKS,
   GrowthPack,
   OrderConfirmation,
   PaymentMethodId,
   VerifiedAccount,
 } from '../data/packs';
+import { PaymentSuccessScreen } from './PaymentSuccessScreen';
 
 interface StepPaymentCardProps {
   verifiedAccount: VerifiedAccount | null;
@@ -99,15 +101,88 @@ export function StepPaymentCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const merchantUpiId = 'igsocial@okaxis';
 
-  // Check if returning from DivinePay payment callback
+  // Helper: given an orderId and optional stored data, check status and trigger success
+  const resolveOrderSuccess = React.useCallback(
+    (checkOrderId: string, storedOrder: any, orderData: any) => {
+      const matchedPack =
+        storedOrder?.pack ||
+        FOLLOWER_PACKS.find(
+          (p) =>
+            p.id === orderData.packId ||
+            p.quantity === orderData.quantity
+        ) || {
+          id: orderData.packId || 'fol-custom',
+          name: `${(orderData.quantity || 1500).toLocaleString('en-IN')} Followers`,
+          quantity: orderData.quantity || 1500,
+          unitLabel: 'FOLLOWERS',
+          priceInr:
+            orderData.amountPaid || orderData.amount || 129,
+          deliveryInfo: 'Starts in 10 mins · 30-day refill',
+        };
+
+      const resolvedAccount: VerifiedAccount =
+        storedOrder?.account || {
+          id: null,
+          username: orderData.username || 'instagram_user',
+          fullName:
+            orderData.fullName ||
+            orderData.username ||
+            'Instagram Customer',
+          profileUrl: `https://www.instagram.com/${orderData.username || 'user'}/`,
+          profilePicUrl: orderData.profilePicUrl || null,
+          bio: null,
+          followersCount: null,
+          followingCount: null,
+          postsCount: null,
+          isPrivate: false,
+          isVerified: true,
+          externalUrl: null,
+          categoryName: null,
+          lookupMode: 'live' as const,
+          verifiedAt: 'Just now',
+        };
+
+      onOrderComplete({
+        orderId: checkOrderId,
+        account: resolvedAccount,
+        pack: matchedPack,
+        paymentMethod: 'upi',
+        paymentDetail: `Pay0 UPI Gateway (${orderData.utr || orderData.gatewayTransactionId || 'Auto-Verified'})${orderData.smmOrderId ? ` · SMM #${orderData.smmOrderId}` : ''}`,
+        amountPaidInr:
+          orderData.amountPaid ||
+          orderData.amount ||
+          storedOrder?.amountPaidInr ||
+          matchedPack.priceInr,
+        createdAt: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      });
+
+      sessionStorage.removeItem('last_pay0_order');
+      sessionStorage.removeItem('last_divinepay_order');
+      sessionStorage.removeItem('last_payment_order');
+      window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname
+      );
+    },
+    [onOrderComplete]
+  );
+
+  // Check if returning from Pay0 payment callback or URL param — with polling
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
     const urlOrderId =
-      searchParams.get('order_id') || searchParams.get('orderId');
+      searchParams.get('order_id') ||
+      searchParams.get('orderId') ||
+      searchParams.get('order_no');
+
     const storedOrderRaw =
+      sessionStorage.getItem('last_pay0_order') ||
       sessionStorage.getItem('last_divinepay_order') ||
-      sessionStorage.getItem('last_payment_order') ||
-      sessionStorage.getItem('last_sunpays_order');
+      sessionStorage.getItem('last_payment_order');
 
     let storedOrder: any = null;
     try {
@@ -115,42 +190,100 @@ export function StepPaymentCard({
     } catch {}
 
     const checkOrderId = urlOrderId || storedOrder?.orderId;
-    if (checkOrderId) {
+    if (!checkOrderId) return;
+
+    let cancelled = false;
+    let pollCount = 0;
+    const MAX_POLLS = 30; // poll for up to ~60 seconds
+
+    const pollStatus = () => {
+      if (cancelled || pollCount >= MAX_POLLS) return;
+      pollCount++;
+
       fetch(`/api/order-status/${encodeURIComponent(checkOrderId)}`)
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
+          if (cancelled) return;
           if (data?.ok && data.order) {
             const status = String(data.order.status || '').toLowerCase();
             if (['paid', 'completed', 'success', '1'].includes(status)) {
-              if (storedOrder?.account && storedOrder?.pack) {
-                onOrderComplete({
-                  orderId: checkOrderId,
-                  account: storedOrder.account,
-                  pack: storedOrder.pack,
-                  paymentMethod: 'upi',
-                  paymentDetail: `DivinePay UPI Gateway (${data.order.utr || data.order.gatewayTransactionId || 'Verified'})`,
-                  amountPaidInr:
-                    data.order.amountPaid || storedOrder.amountPaidInr,
-                  createdAt: new Date().toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  }),
-                });
-                sessionStorage.removeItem('last_divinepay_order');
-                sessionStorage.removeItem('last_payment_order');
-                sessionStorage.removeItem('last_sunpays_order');
-                window.history.replaceState(
-                  {},
-                  document.title,
-                  window.location.pathname
-                );
-              }
+              resolveOrderSuccess(checkOrderId, storedOrder, data.order);
+              return; // stop polling
             }
           }
+          // Still pending — poll again in 2 seconds
+          if (!cancelled && pollCount < MAX_POLLS) {
+            setTimeout(pollStatus, 2000);
+          }
         })
-        .catch(() => {});
-    }
-  }, [onOrderComplete]);
+        .catch(() => {
+          // Network error — retry in 3 seconds
+          if (!cancelled && pollCount < MAX_POLLS) {
+            setTimeout(pollStatus, 3000);
+          }
+        });
+    };
+
+    // Start first check immediately
+    pollStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onOrderComplete, resolveOrderSuccess]);
+
+  // Poll while user is on Pay0 page (isCreatingPayment=true means we redirected)
+  useEffect(() => {
+    if (!isCreatingPayment) return;
+
+    const storedOrderRaw = sessionStorage.getItem('last_pay0_order');
+    let storedOrder: any = null;
+    try {
+      storedOrder = storedOrderRaw ? JSON.parse(storedOrderRaw) : null;
+    } catch {}
+
+    const orderId = storedOrder?.orderId;
+    if (!orderId) return;
+
+    let cancelled = false;
+    let pollCount = 0;
+    const MAX_POLLS = 90; // poll for up to ~3 minutes while user pays
+
+    const pollWhileAway = () => {
+      if (cancelled || pollCount >= MAX_POLLS) return;
+      pollCount++;
+
+      fetch(`/api/order-status/${encodeURIComponent(orderId)}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (cancelled) return;
+          if (data?.ok && data.order) {
+            const status = String(data.order.status || '').toLowerCase();
+            if (['paid', 'completed', 'success', '1'].includes(status)) {
+              setIsCreatingPayment(false);
+              resolveOrderSuccess(orderId, storedOrder, data.order);
+              return;
+            }
+          }
+          if (!cancelled && pollCount < MAX_POLLS) {
+            setTimeout(pollWhileAway, 2000);
+          }
+        })
+        .catch(() => {
+          if (!cancelled && pollCount < MAX_POLLS) {
+            setTimeout(pollWhileAway, 3000);
+          }
+        });
+    };
+
+    // Wait 5s before first poll (give user time to pay)
+    const startTimer = setTimeout(pollWhileAway, 5000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(startTimer);
+    };
+  }, [isCreatingPayment, onOrderComplete, resolveOrderSuccess]);
 
   const handleCopyUpi = () => {
     if (navigator.clipboard) {
@@ -183,6 +316,9 @@ export function StepPaymentCard({
         body: JSON.stringify({
           amount: selectedPack.priceInr,
           username: verifiedAccount.username,
+          fullName:
+            verifiedAccount.fullName || verifiedAccount.username || '',
+          profilePicUrl: verifiedAccount.profilePicUrl || null,
           pack_id: selectedPack.id,
           quantity: selectedPack.quantity,
           customer_name:
@@ -190,7 +326,6 @@ export function StepPaymentCard({
             verifiedAccount.username ||
             'Instagram Customer',
           customer_phone: '9999999999',
-          customer_email: `${verifiedAccount.username.replace(/[^a-zA-Z0-9]/g, '') || 'customer'}@ig-social.com`,
           metadata: {
             username: verifiedAccount.username,
             followers: selectedPack.quantity,
@@ -205,7 +340,7 @@ export function StepPaymentCard({
         // Save pending order info to sessionStorage
         try {
           sessionStorage.setItem(
-            'last_divinepay_order',
+            'last_pay0_order',
             JSON.stringify({
               orderId: data.orderId,
               account: verifiedAccount,
@@ -219,13 +354,13 @@ export function StepPaymentCard({
           );
         } catch {}
 
-        // Redirect directly to DivinePay Checkout URL
+        // Redirect directly to Pay0 Checkout URL
         window.location.href = data.paymentUrl;
       } else {
         setIsCreatingPayment(false);
         setErrorMessage(
           data?.error ||
-            'Payment gateway connection failed. Please try again or use manual QR.'
+            'Pay0 payment gateway connection failed. Please try again or use manual QR.'
         );
       }
     } catch (err: any) {
@@ -280,58 +415,15 @@ export function StepPaymentCard({
 
   if (orderConfirmation) {
     return (
-      <section
-        id="step-3"
-        aria-labelledby="step-3-heading"
-        className="rounded-3xl bg-[#062A61] text-white border border-[#0E3F8A] p-6 sm:p-8 shadow-md"
-      >
-        <div className="flex items-start gap-4 pb-5 border-b border-white/15">
-          <div className="h-11 w-11 rounded-2xl bg-[#0068FF] text-white flex items-center justify-center shrink-0">
-            <CheckCircle2 className="w-6 h-6" />
-          </div>
-          <div>
-            <p className="text-xs font-num text-[#93C5FD]">
-              ORDER CONFIRMED · {orderConfirmation.orderId}
-            </p>
-            <h2 id="step-3-heading" className="text-xl font-bold mt-0.5">
-              Followers Queued for @{orderConfirmation.account.username}
-            </h2>
-          </div>
-        </div>
-
-        <dl className="py-5 space-y-2.5 text-sm">
-          <div className="flex justify-between gap-4">
-            <dt className="text-[#C7DCFA]">Pack</dt>
-            <dd className="font-bold">
-              {orderConfirmation.pack.quantity.toLocaleString('en-IN')}{' '}
-              {orderConfirmation.pack.unitLabel}
-            </dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-[#C7DCFA]">Payment</dt>
-            <dd className="font-medium">{orderConfirmation.paymentDetail}</dd>
-          </div>
-          <div className="flex justify-between gap-4 pt-2 border-t border-white/15">
-            <dt className="font-semibold">Total Paid</dt>
-            <dd className="text-lg font-num font-bold text-[#60A5FA] tabular-nums">
-              INR {orderConfirmation.amountPaidInr.toLocaleString('en-IN')}
-            </dd>
-          </div>
-        </dl>
-
-        <button
-          type="button"
-          onClick={() => {
-            setShowCheckoutForm(false);
-            setUtrInput('');
-            setUpiIdInput('');
-            onStartNewOrder();
-          }}
-          className="w-full py-3 rounded-2xl bg-[#0068FF] hover:bg-[#1A78FF] text-white font-bold text-sm uppercase tracking-wide transition-colors cursor-pointer"
-        >
-          Place Another Order
-        </button>
-      </section>
+      <PaymentSuccessScreen
+        orderConfirmation={orderConfirmation}
+        onStartNewOrder={() => {
+          setShowCheckoutForm(false);
+          setUtrInput('');
+          setUpiIdInput('');
+          onStartNewOrder();
+        }}
+      />
     );
   }
 
