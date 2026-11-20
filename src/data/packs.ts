@@ -51,6 +51,14 @@ export interface RecentTransaction {
 
 export const FOLLOWER_PACKS: GrowthPack[] = [
   {
+    id: 'fol-500',
+    name: '500 Followers',
+    quantity: 500,
+    unitLabel: 'FOLLOWERS',
+    priceInr: 59,
+    deliveryInfo: 'Starts in 10 mins · 30-day refill',
+  },
+  {
     id: 'fol-1500',
     name: '1,500 Followers',
     quantity: 1500,
