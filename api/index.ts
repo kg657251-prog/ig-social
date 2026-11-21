@@ -12,12 +12,14 @@ const IG_APP_ID = '936619743392459';
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const CRAWLER_USER_AGENTS = [
-  'Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)',
-  'Twitterbot/1.0',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 254.0.0.19.109',
+const PRIMARY_CRAWLER_UAS = [
   'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   'WhatsApp/2.21.12.21 A',
+];
+
+const FALLBACK_CRAWLER_UAS = [
+  'Twitterbot/1.0',
+  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
 ];
 
 interface IgProfilePayload {
@@ -186,15 +188,31 @@ function extractProfileFromHtml(
     }
   }
 
-  // 4. Avatar from og:image (ignore Instagram's static logo/favicon on login pages)
-  let rawOgImage = getMetaContent(html, 'og:image');
+  // 4. Avatar from og:image or twitter:image (ignore Instagram's static logo/favicon on login pages)
+  let rawAvatar: string | null = getMetaContent(html, '(?:og:image|twitter:image)');
   if (
-    rawOgImage &&
-    (rawOgImage.includes('/rsrc.php/') ||
-      rawOgImage.includes('static.cdninstagram.com') ||
-      rawOgImage.includes('static.xx.fbcdn.net'))
+    rawAvatar &&
+    (rawAvatar.includes('/rsrc.php/') ||
+      rawAvatar.includes('static.cdninstagram.com') ||
+      rawAvatar.includes('static.xx.fbcdn.net'))
   ) {
-    rawOgImage = null;
+    rawAvatar = null;
+  }
+
+  // Fallback to embedded JSON profile_pic_url_hd or profile_pic_url
+  if (!rawAvatar) {
+    const hdMatch = html.match(/"profile_pic_url_hd"\s*:\s*"([^"]+)"/i);
+    const stdMatch = html.match(/"profile_pic_url"\s*:\s*"([^"]+)"/i);
+    const foundUrl = (hdMatch && hdMatch[1]) || (stdMatch && stdMatch[1]);
+    if (foundUrl) {
+      const clean = foundUrl.replace(/\\u0026/g, '&').replace(/\\/g, '');
+      if (
+        clean.startsWith('http') &&
+        (clean.includes('cdninstagram.com') || clean.includes('fbcdn.net'))
+      ) {
+        rawAvatar = clean;
+      }
+    }
   }
 
   // 5. Canonical URL
@@ -225,7 +243,7 @@ function extractProfileFromHtml(
     (jsonUser?.description ? decodeHtmlEntities(jsonUser.description) : null) ||
     bioFromDesc;
   const resolvedAvatar = buildAvatarProxyUrl(
-    rawOgImage || jsonUser?.image || null
+    rawAvatar || jsonUser?.image || null
   );
 
   return {
@@ -415,51 +433,91 @@ async function findInstagramProfileById(
   }
 }
 
+function raceFirstValid<T>(promises: Promise<T | null>[]): Promise<T | null> {
+  return new Promise((resolve) => {
+    let pending = promises.length;
+    let resolved = false;
+
+    if (pending === 0) {
+      resolve(null);
+      return;
+    }
+
+    promises.forEach((p) => {
+      p.then((result) => {
+        if (!resolved && result) {
+          resolved = true;
+          resolve(result);
+        } else {
+          pending--;
+          if (pending === 0 && !resolved) {
+            resolve(null);
+          }
+        }
+      }).catch(() => {
+        pending--;
+        if (pending === 0 && !resolved) {
+          resolve(null);
+        }
+      });
+    });
+  });
+}
+
 async function fetchViaCrawler(
   username: string
 ): Promise<IgProfilePayload | null> {
-  const fetchWithUa = async (ua: string): Promise<IgProfilePayload | null> => {
+  const fetchWithUa = async (
+    ua: string,
+    timeoutMs = 3500
+  ): Promise<IgProfilePayload | null> => {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
 
       const headers: Record<string, string> = {
         'User-Agent': ua,
         Accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
       };
 
-      const response = await fetch(`https://www.instagram.com/${username}/`, {
-        headers,
-        signal: controller.signal,
-      });
+      const response = await fetch(
+        `https://www.instagram.com/${encodeURIComponent(username)}/`,
+        {
+          headers,
+          signal: controller.signal,
+        }
+      );
       clearTimeout(timer);
 
       if (!response.ok) return null;
       const html = await response.text();
-      return extractProfileFromHtml(username, null, html);
+      const profile = extractProfileFromHtml(username, null, html);
+      if (profile && profile.profilePicUrl) {
+        return profile;
+      }
+      return null;
     } catch {
       return null;
     }
   };
 
-  const results = await Promise.all(
-    CRAWLER_USER_AGENTS.map((ua) => fetchWithUa(ua))
+  // Phase 1: Fast race top crawlers (returns in ~600-1200ms)
+  const primaryResult = await raceFirstValid(
+    PRIMARY_CRAWLER_UAS.map((ua) => fetchWithUa(ua, 3200))
   );
-
-  // 1. Prioritize complete profile with profile picture
-  for (const p of results) {
-    if (p && p.profilePicUrl && (p.followersCount !== null || p.fullName)) {
-      return p;
-    }
+  if (primaryResult && primaryResult.profilePicUrl) {
+    return primaryResult;
   }
 
-  // 2. Otherwise return any candidate that has a verified profile picture
-  for (const p of results) {
-    if (p && p.profilePicUrl) {
-      return p;
-    }
+  // Phase 2: Fallback crawlers if phase 1 missed
+  const fallbackResult = await raceFirstValid(
+    FALLBACK_CRAWLER_UAS.map((ua) => fetchWithUa(ua, 3800))
+  );
+  if (fallbackResult && fallbackResult.profilePicUrl) {
+    return fallbackResult;
   }
 
   return null;
@@ -539,6 +597,7 @@ router.get('/ig/profile/:identifier', async (req, res) => {
   const cacheKey = raw.toLowerCase();
   const cached = profileCache.get(cacheKey);
   if (cached && cached.profile?.profilePicUrl && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=600');
     res.json({ ok: true, mode: 'live', profile: cached.profile });
     return;
   }
@@ -550,6 +609,7 @@ router.get('/ig/profile/:identifier', async (req, res) => {
       const byIdResult = await findInstagramProfileById(raw, cookieHeader);
       if (byIdResult.profile && byIdResult.profile.profilePicUrl) {
         profileCache.set(cacheKey, { profile: byIdResult.profile, timestamp: Date.now() });
+        res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=600');
         res.json({ ok: true, mode: 'live', profile: byIdResult.profile });
         return;
       }
@@ -561,9 +621,16 @@ router.get('/ig/profile/:identifier', async (req, res) => {
     }
 
     // Primary: fetch via mobile/crawler user agents
-    const crawlerProfile = await fetchViaCrawler(raw);
+    let crawlerProfile = await fetchViaCrawler(raw);
+    if (!crawlerProfile || !crawlerProfile.profilePicUrl) {
+      // Fast fallback retry after 250ms in case Instagram had a momentary rate check
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      crawlerProfile = await fetchViaCrawler(raw);
+    }
+
     if (crawlerProfile && crawlerProfile.profilePicUrl) {
       profileCache.set(cacheKey, { profile: crawlerProfile, timestamp: Date.now() });
+      res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=600');
       res.json({ ok: true, mode: 'live', profile: crawlerProfile });
       return;
     }

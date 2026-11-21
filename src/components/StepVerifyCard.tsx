@@ -76,10 +76,7 @@ export function StepVerifyCard({
 
     setIsVerifying(true);
     try {
-      const res = await fetch(
-        `/api/ig/profile/${encodeURIComponent(cleanHandle)}`
-      );
-      const data = (await res.json()) as {
+      let data: {
         ok?: boolean;
         mode?: 'live' | 'unauthenticated_fallback';
         notice?: string;
@@ -99,11 +96,35 @@ export function StepVerifyCard({
           externalUrl: string | null;
           categoryName: string | null;
         };
-      };
+      } | null = null;
+      let lastErrorMessage = '';
+      const MAX_ATTEMPTS = 3;
 
-      if (!res.ok || !data.ok || !data.profile || !data.profile.profilePicUrl) {
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const res = await fetch(
+            `/api/ig/profile/${encodeURIComponent(cleanHandle)}`
+          );
+          const parsed = await res.json();
+          if (res.ok && parsed.ok && parsed.profile && parsed.profile.profilePicUrl) {
+            data = parsed;
+            break;
+          }
+          if (parsed?.error) {
+            lastErrorMessage = parsed.error;
+          }
+        } catch {
+          // network or transient hiccup during attempt
+        }
+
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, 350 * attempt));
+        }
+      }
+
+      if (!data || !data.ok || !data.profile || !data.profile.profilePicUrl) {
         setErrorMessage(
-          data.error ||
+          lastErrorMessage ||
             'Instagram profile or profile picture could not be verified. Only valid public accounts with a verified profile picture can proceed.'
         );
         setIsVerifying(false);
