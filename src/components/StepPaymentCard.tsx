@@ -112,12 +112,12 @@ export function StepPaymentCard({
             p.quantity === orderData.quantity
         ) || {
           id: orderData.packId || 'fol-custom',
-          name: `${(orderData.quantity || 1500).toLocaleString('en-IN')} Followers`,
-          quantity: orderData.quantity || 1500,
+          name: `${(orderData.quantity || 1000).toLocaleString('en-IN')} Followers`,
+          quantity: orderData.quantity || 1000,
           unitLabel: 'FOLLOWERS',
           priceInr:
-            orderData.amountPaid || orderData.amount || 129,
-          deliveryInfo: 'Starts in 10 mins · 30-day refill',
+            orderData.amountPaid || orderData.amount || 179,
+          deliveryInfo: 'Starts in 10 mins · Lifetime non-drop',
         };
 
       const resolvedAccount: VerifiedAccount =

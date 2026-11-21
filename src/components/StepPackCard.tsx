@@ -29,9 +29,17 @@ export function StepPackCard({
             Select Followers Pack
           </h2>
           <p className="text-xs text-[#5B78A3] hidden sm:block mt-0.5">
-            Instant start · Non-drop guarantee · Safe delivery
+            Instant start · 100% Lifetime Non-Drop · 100% Money Back Guarantee
           </p>
         </div>
+      </div>
+
+      {/* Non-drop Lifetime & Money Back Guarantee Banner */}
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-50 via-[#EBF7F0] to-blue-50 border border-emerald-200/90 text-emerald-950 mb-3.5 text-xs sm:text-sm font-bold shadow-xs">
+        <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+        <span className="leading-snug">
+          100% Lifetime Followers Non-Drop — If drops, we provide 100% money back guarantee!
+        </span>
       </div>
 
       {/* Pack Tiles Grid */}
@@ -108,15 +116,19 @@ export function StepPackCard({
       </div>
 
       {/* Trust Guarantee */}
-      <div className="mt-4 pt-3.5 border-t border-[#E8F1FC] flex items-center justify-center gap-4 text-xs text-[#4A6E9E] flex-wrap">
-        <span className="inline-flex items-center gap-1">
+      <div className="mt-4 pt-3.5 border-t border-[#E8F1FC] flex items-center justify-center gap-3 sm:gap-5 text-xs text-[#4A6E9E] flex-wrap">
+        <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-          100% Safe (No Password)
+          100% Lifetime Non-Drop
+        </span>
+        <span className="text-[#CBDCF5]">·</span>
+        <span className="inline-flex items-center gap-1 font-semibold text-[#0058D6]">
+          <Zap className="w-3.5 h-3.5 text-amber-500" />
+          100% Money Back Guarantee
         </span>
         <span className="text-[#CBDCF5]">·</span>
         <span className="inline-flex items-center gap-1">
-          <Zap className="w-3.5 h-3.5 text-amber-500" />
-          Refill Guarantee
+          100% Safe (No Password)
         </span>
       </div>
     </section>

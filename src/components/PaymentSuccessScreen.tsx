@@ -1,7 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { Check, Copy, ExternalLink, RotateCcw } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  RotateCcw,
+} from 'lucide-react';
 import { OrderConfirmation } from '../data/packs';
-import { TELEGRAM_CHANNEL_URL, TelegramIcon } from './FloatingTelegram';
+import { TelegramIcon, TELEGRAM_CHANNEL_URL } from './FloatingTelegram';
 
 interface PaymentSuccessScreenProps {
   orderConfirmation: OrderConfirmation;
@@ -13,15 +18,15 @@ export function PaymentSuccessScreen({
   onStartNewOrder,
 }: PaymentSuccessScreenProps) {
   const [copiedOrderId, setCopiedOrderId] = useState(false);
-  const [showContent, setShowContent] = useState(false);
 
-  const { orderId, account, pack, amountPaidInr, createdAt, paymentDetail } =
-    orderConfirmation;
-
-  useEffect(() => {
-    const t = setTimeout(() => setShowContent(true), 400);
-    return () => clearTimeout(t);
-  }, []);
+  const {
+    orderId,
+    account,
+    pack,
+    paymentDetail,
+    amountPaidInr,
+    createdAt,
+  } = orderConfirmation;
 
   const handleCopyOrderId = () => {
     if (navigator.clipboard) {
@@ -33,50 +38,34 @@ export function PaymentSuccessScreen({
 
   return (
     <section
-      id="order-success-screen"
-      aria-labelledby="order-success-heading"
-      className="relative overflow-hidden rounded-2xl bg-[#0A1628] text-white"
+      aria-label="Order Placed Successfully"
+      className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-[#0A1628] via-[#0D223D] to-[#0A1628] text-white p-5 sm:p-8 border border-[#1A3A6A] shadow-2xl"
     >
-      {/* Top gradient accent bar */}
-      <div className="h-1 w-full bg-gradient-to-r from-blue-500 via-cyan-400 to-blue-600" />
+      {/* Background accents */}
+      <div className="absolute -top-32 -right-32 w-80 h-80 rounded-full bg-blue-500/10 blur-3xl pointer-events-none" />
+      <div className="absolute -bottom-32 -left-32 w-80 h-80 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
 
-      {/* Checkmark hero */}
-      <div className="flex flex-col items-center pt-8 pb-5 px-5">
-        {/* Animated check circle */}
-        <div
-          className="relative w-[72px] h-[72px] mb-5"
-          style={{
-            animation: 'scaleIn 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards',
-          }}
-        >
-          {/* Soft glow behind */}
-          <div className="absolute inset-0 rounded-full bg-blue-500/20 blur-xl" />
-          {/* Circle */}
-          <div className="relative w-full h-full rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/30">
-            <Check className="w-8 h-8 text-white stroke-[3]" />
+      <div className="relative max-w-md mx-auto space-y-6">
+        {/* Success header */}
+        <div className="text-center space-y-2 pt-2">
+          {/* Animated checkmark icon */}
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-tr from-emerald-500 to-emerald-400 text-white shadow-lg shadow-emerald-500/30 mb-2 animate-[scaleIn_0.4s_ease-out]">
+            <Check className="w-8 h-8 stroke-[3]" />
           </div>
+
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold tracking-wide">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            PAYMENT CONFIRMED · VERIFIED
+          </div>
+
+          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+            Order Placed Successfully!
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-400">
+            Followers will start delivering to your account shortly.
+          </p>
         </div>
 
-        <h2
-          id="order-success-heading"
-          className="text-xl sm:text-2xl font-bold tracking-tight text-center"
-        >
-          Order Confirmed
-        </h2>
-        <p className="text-sm text-slate-400 mt-1 text-center">
-          Your followers will start delivering shortly.
-        </p>
-      </div>
-
-      {/* Main content area */}
-      <div
-        className="px-5 pb-6 space-y-4"
-        style={{
-          opacity: showContent ? 1 : 0,
-          transform: showContent ? 'translateY(0)' : 'translateY(12px)',
-          transition: 'all 0.4s ease-out',
-        }}
-      >
         {/* Order ID */}
         <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-white/[0.04] border border-white/[0.06]">
           <div className="flex items-center gap-2 min-w-0">
@@ -158,6 +147,12 @@ export function PaymentSuccessScreen({
             <span className="text-slate-500">Paid</span>
             <span className="font-semibold text-white tabular-nums">
               ₹{amountPaidInr.toLocaleString('en-IN')}
+            </span>
+          </div>
+          <div className="flex justify-between items-center px-4 py-2.5">
+            <span className="text-slate-500">Guarantee</span>
+            <span className="text-emerald-400 font-medium text-xs">
+              100% Lifetime Non-Drop &amp; Money-Back
             </span>
           </div>
           <div className="flex justify-between items-center px-4 py-2.5">

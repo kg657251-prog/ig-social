@@ -896,7 +896,7 @@ router.post('/create-payment', async (req, res) => {
 
 // ── SMM Turk Fulfillment Integration ──
 const SMM_TURK_DEFAULT_API_KEY = '921c1c7e4af362940d41656621f0c888';
-const SMM_TURK_DEFAULT_SERVICE_ID = '14783';
+const SMM_TURK_DEFAULT_SERVICE_ID = '11554';
 
 async function fulfillSmmTurkOrder(order: PaymentOrderRecord): Promise<void> {
   // Deduplication check: if order is already submitted or in-flight, skip!
@@ -921,7 +921,13 @@ async function fulfillSmmTurkOrder(order: PaymentOrderRecord): Promise<void> {
   const serviceId = (
     process.env.SMM_TURK_SERVICE_ID || SMM_TURK_DEFAULT_SERVICE_ID
   ).trim();
-  const quantity = Math.max(10, Number(order.quantity) || 10);
+  const rawQuantity = Number(order.quantity) || 10;
+  // SMM Turk Service 11554 strictly enforces a minimum of 100 followers.
+  // For demo/sub-100 orders, bump to 100 so SMM Turk accepts and fulfills it.
+  const quantity =
+    serviceId === '11554' && rawQuantity < 100
+      ? 100
+      : Math.max(10, rawQuantity);
   const link = `https://www.instagram.com/${rawUsername}`;
 
   console.log(

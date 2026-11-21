@@ -58,13 +58,13 @@ export function Footer() {
               <Heart className="w-4.5 h-4.5 text-blue-400" />
             </div>
             <p className="text-[11px] font-bold text-white">Non-Drop</p>
-            <p className="text-[10px] text-[#8BAAD0]">30-Day Auto Refill</p>
+            <p className="text-[10px] text-[#8BAAD0]">100% Lifetime Guarantee</p>
           </div>
         </div>
 
         {/* Payment + Guarantee Row */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 py-5 border-b border-white/10">
-          <div className="text-center sm:text-left">
+          <div className="text-center sm:left">
             <p className="text-xs font-bold text-white">Accepted Payments</p>
             <p className="text-[10px] text-[#8BAAD0] mt-0.5">
               PhonePe · Google Pay · Paytm · BHIM UPI
